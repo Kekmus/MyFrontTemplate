@@ -1,0 +1,113 @@
+---
+
+include:
+  - component: kekmus.gitlab.yandexcloud.net/devops/cicd/init-components/start-runner/start-runner@~latest
+  - project: games/cicd
+    file: /templates/gitlab/jobs/Helm-Deploy.gitlab-ci.yml
+  - project: games/cicd
+    file: /templates/gitlab/jobs/Upload-To-S3.yml
+  - project: games/cicd
+    file: /templates/gitlab/jobs/Notify-To-TLGRM-ci.yml
+
+variables:
+  PROJECT_ALIAS: template
+  RELEASE_NAME: ${PROJECT_ALIAS}-web
+  BASE_DOMAIN: games-tech.ru
+  SUBDOMAIN: ${PROJECT_ALIAS}
+  IMAGE_NAME: ${REGISTRY}/${PROJECT_ALIAS}/titans/web
+  IMAGE_TAG: prod-${CI_COMMIT_SHORT_SHA}
+  IMAGE: ${IMAGE_NAME}:${IMAGE_TAG}
+  VIRTUAL_HOST: ${SUBDOMAIN}.${BASE_DOMAIN}
+  ENV: stage
+
+stages:
+  - build
+  - publish
+  - deploy
+
+.rules:
+  commit_to_default:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_TAG
+
+
+workflow:
+  rules:
+    - !reference [.rules, commit_to_default]
+
+Build:
+  stage: build
+  before_script:
+    - cat "${REGISTRY_KEY_FILE}" |
+        docker login ${REGISTRY} -u ${REGISTRY_USERNAME} --password-stdin
+  script:
+    - docker build -t ${IMAGE} --build-arg ENV=${ENV} .
+    - docker push ${IMAGE}
+  interruptible: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      variables:
+        ENV: prod
+    - when: always
+
+   #Build for CDN:
+   #  image:
+   #    name: node:20.18.0-slim
+   #    entrypoint: [""]
+   #  stage: publish
+   #  needs:
+   #    - job: Build
+   #  script:
+   #    - yarn install && yarn build:${ENV}
+   #  artifacts:
+   #    paths:
+   #      - dist/*
+   #    expire_in: 1 day
+   #  rules:
+   #    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+   #      variables:
+   #        ENV: prod
+   #    - if: $CI_COMMIT_BRANCH == "dev"
+   #      when: always
+
+   #Upload Artifacts to S3:
+   #  needs:
+   #    - job: Build for CDN
+   #      artifacts: true
+   #  extends: .upload_to_s3
+   #  stage: publish
+   #  variables:
+   #    S3_BUCKET: cdn-content
+   #    NAME_OF_PROJECT: ${PROJECT_ALIAS}/${ENV}
+   #    PATH_TO_FILES: dist/
+   #  script:
+   #    - aws --endpoint-url=https://${S3_HOST}/
+   #        s3 cp ${PATH_TO_FILES} s3://${S3_BUCKET}/${NAME_OF_PROJECT}/${FILE} --recursive
+   #  rules:
+   #    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+   #      variables:
+   #        ENV: prod
+   #    - if: $CI_COMMIT_BRANCH == "dev"
+   #      when: always
+
+Deploy to Dev:
+  extends: .deploy
+  variables:
+    RELEASE_NAME: ${PROJECT_ALIAS}-web
+    SUBDOMAIN: ${PROJECT_ALIAS}-dev
+  environment:
+    name: dev
+    url: https://${VIRTUAL_HOST}
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - when: never
+
+Deploy to Prod:
+  extends: .deploy
+  environment:
+    name: prod
+    url: https://${VIRTUAL_HOST}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
